@@ -113,6 +113,27 @@
     text-transform:uppercase;
   }
   .add-challenge-btn:hover{background:var(--accent);}
+  .summary-card{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:14px 20px;
+    margin-bottom:24px;
+  }
+  .summary-label{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;
+    color:var(--muted);margin-bottom:8px;
+  }
+  .summary-track{
+    height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-bottom:8px;
+  }
+  .summary-fill{
+    height:100%;background:var(--moss);transition:width .4s ease;
+  }
+  .summary-stats{
+    font-family:'IBM Plex Mono',monospace;font-size:0.75rem;color:var(--ink);
+  }
   .board{
     display:grid;
     grid-template-columns:repeat(auto-fill,minmax(270px,1fr));
@@ -127,6 +148,7 @@
     position:relative;
     overflow:hidden;
   }
+  .card.dragging{opacity:0.35;}
   .card-head{
     display:flex;
     justify-content:space-between;
@@ -134,6 +156,16 @@
     gap:8px;
     margin-bottom:10px;
   }
+  .head-left{
+    display:flex;align-items:flex-start;gap:8px;flex:1;min-width:0;
+  }
+  .drag-handle{
+    cursor:grab;user-select:none;touch-action:none;
+    color:var(--muted);font-size:1.05rem;letter-spacing:-1px;
+    padding:2px 2px;margin-top:2px;line-height:1;
+  }
+  .drag-handle:hover{color:var(--ink);}
+  .head-actions{display:flex;gap:2px;align-items:flex-start;}
   .cname{
     font-family:'Fraunces',serif;
     font-weight:600;
@@ -141,13 +173,15 @@
     outline:none;
     line-height:1.25;
     flex:1;
+    min-width:0;
   }
   .cname:empty:before{content:"Název výzvy";color:var(--muted);}
-  .del-card{
+  .del-card, .dup-card{
     background:none;border:none;color:var(--muted);
     font-size:1rem;cursor:pointer;line-height:1;padding:2px 4px;
   }
   .del-card:hover{color:var(--danger);}
+  .dup-card:hover{color:var(--accent);}
   .progress-track{
     height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-bottom:6px;
   }
@@ -208,6 +242,12 @@
     letter-spacing:0.05em;background:transparent;
   }
   .new-card:hover{border-color:var(--accent);color:var(--accent);}
+  .drag-ghost{
+    position:fixed;z-index:1000;pointer-events:none;
+    box-shadow:0 10px 28px rgba(0,0,0,0.28);
+    transform:scale(1.03) rotate(1deg);
+    opacity:0.96;
+  }
   .stamp{
     position:absolute;top:14px;right:-30px;
     background:var(--moss);color:var(--card);
@@ -242,6 +282,8 @@
   </header>
 
   <div class="countdown" id="countdown"></div>
+
+  <div class="summary-card" id="summary"></div>
 
   <div id="board" class="board"></div>
   <footer><button onclick="resetAll()">Vymazat vše</button></footer>
@@ -306,6 +348,19 @@ function renderCountdown(){
 
 function uid(){ return Math.random().toString(36).slice(2,9); }
 
+function renderSummary(){
+  const el = document.getElementById('summary');
+  const totalMilestones = data.reduce((sum,c)=>sum+c.milestones.length, 0);
+  const doneMilestones = data.reduce((sum,c)=>sum+c.milestones.filter(m=>m.done).length, 0);
+  const pct = totalMilestones ? Math.round(doneMilestones/totalMilestones*100) : 0;
+  const doneChallenges = data.filter(c=>c.milestones.length>0 && c.milestones.every(m=>m.done)).length;
+  el.innerHTML = `
+    <div class="summary-label">Celkový postup napříč výzvami</div>
+    <div class="summary-track"><div class="summary-fill" style="width:${pct}%"></div></div>
+    <div class="summary-stats">${doneMilestones}/${totalMilestones} milníků · ${doneChallenges}/${data.length} výzev splněno · ${pct}%</div>
+  `;
+}
+
 async function load(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -346,6 +401,19 @@ function addChallenge(){
 
 function delChallenge(id){
   data = data.filter(c=>c.id!==id);
+  save(); render();
+}
+
+function duplicateChallenge(id){
+  const c = data.find(c=>c.id===id);
+  if(!c) return;
+  const copy = {
+    id: uid(),
+    name: c.name + ' (kopie)',
+    milestones: c.milestones.map(m=>({id:uid(), text:m.text, done:m.done}))
+  };
+  const idx = data.findIndex(c=>c.id===id);
+  data.splice(idx+1, 0, copy);
   save(); render();
 }
 
@@ -405,13 +473,20 @@ function render(){
     const complete = total>0 && done===total;
 
     const card = document.createElement('div');
-    card.className = 'card';
+    card.className = 'card' + (dragState && dragState.id === c.id ? ' dragging' : '');
+    card.dataset.id = c.id;
 
     card.innerHTML = `
       ${complete ? '<div class="stamp">Splněno</div>' : ''}
       <div class="card-head">
-        <div class="cname" contenteditable="true" data-id="${c.id}">${escapeHtml(c.name)}</div>
-        <button class="del-card" title="Smazat výzvu" onclick="delChallenge('${c.id}')">✕</button>
+        <div class="head-left">
+          <div class="drag-handle" title="Podrž a přetáhni">⠿</div>
+          <div class="cname" contenteditable="true" data-id="${c.id}">${escapeHtml(c.name)}</div>
+        </div>
+        <div class="head-actions">
+          <button class="dup-card" title="Zkopírovat výzvu" onclick="duplicateChallenge('${c.id}')">⧉</button>
+          <button class="del-card" title="Smazat výzvu" onclick="delChallenge('${c.id}')">✕</button>
+        </div>
       </div>
       <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       <div class="progress-label">${done}/${total} milníků · ${pct}%</div>
@@ -462,12 +537,77 @@ function render(){
       inp.value='';
     });
   });
+  board.querySelectorAll('.drag-handle').forEach(handle=>{
+    handle.addEventListener('pointerdown', onDragHandleDown);
+  });
+
+  renderSummary();
 }
 
 function escapeHtml(str){
   const div = document.createElement('div');
   div.textContent = str || '';
   return div.innerHTML;
+}
+
+// --- Přetahování karet (myš i dotyk) ---
+let dragState = null;
+
+function onDragHandleDown(e){
+  e.preventDefault();
+  const card = e.target.closest('.card');
+  if(!card) return;
+  const rect = card.getBoundingClientRect();
+
+  const ghost = card.cloneNode(true);
+  ghost.classList.add('drag-ghost');
+  ghost.style.width = rect.width + 'px';
+  ghost.style.left = rect.left + 'px';
+  ghost.style.top = rect.top + 'px';
+  document.body.appendChild(ghost);
+
+  dragState = {
+    id: card.dataset.id,
+    offsetX: e.clientX - rect.left,
+    offsetY: e.clientY - rect.top,
+    ghost
+  };
+
+  card.classList.add('dragging');
+  document.addEventListener('pointermove', onDragMove);
+  document.addEventListener('pointerup', onDragUp);
+}
+
+function onDragMove(e){
+  if(!dragState) return;
+  dragState.ghost.style.left = (e.clientX - dragState.offsetX) + 'px';
+  dragState.ghost.style.top = (e.clientY - dragState.offsetY) + 'px';
+
+  const prevPointerEvents = dragState.ghost.style.pointerEvents;
+  dragState.ghost.style.pointerEvents = 'none';
+  const elems = document.elementsFromPoint(e.clientX, e.clientY);
+  dragState.ghost.style.pointerEvents = prevPointerEvents;
+
+  const overCard = elems.find(el => el.classList && el.classList.contains('card') && el.dataset.id !== dragState.id);
+  if(overCard){
+    const fromIdx = data.findIndex(c=>c.id===dragState.id);
+    const toIdx = data.findIndex(c=>c.id===overCard.dataset.id);
+    if(fromIdx !== -1 && toIdx !== -1 && fromIdx !== toIdx){
+      const [moved] = data.splice(fromIdx, 1);
+      data.splice(toIdx, 0, moved);
+      render();
+    }
+  }
+}
+
+function onDragUp(){
+  if(!dragState) return;
+  document.removeEventListener('pointermove', onDragMove);
+  document.removeEventListener('pointerup', onDragUp);
+  dragState.ghost.remove();
+  dragState = null;
+  save();
+  render();
 }
 
 load();
